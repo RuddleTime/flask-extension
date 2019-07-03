@@ -1,66 +1,115 @@
-import os
-
-from datetime import timedelta
-
-from flask import Flask
+from flask import Flask, jsonify
 from flask_restful import Api
-from flask_jwt import JWT
+from flask_jwt_extended import JWTManager
 
-from security import authenticate, identity
-from resources.user import UserRegister
-from resources.item import Item, ItemsList
-from resources.store import Store, StoresList
+from blacklist import BLACKLIST
+from resources.user import (
+    UserRegister,
+    User,
+    UserLogin,
+    TokenRefresh,
+    UserLogout)
+from resources.item import Item, ItemList
+from resources.store import Store, StoreList
 
 app = Flask(__name__)
-# get(<1environment_var_to_read>, <2default_value>)
-# 1 -> say from Heroku
-# 2 -> if running locally
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///data.db')
-
-# Specify a configuration property
-# Turns off Flask SQLAlchemy tracker, but not the
-# SQLAlchemy tracker - so tracking the extensions behaviours 
-app.config['SQLALCHEMY_TRACK_NOTIFICATIONS'] = False
-
-# XXX: do not leave secert key visible if publishing code
-app.secert_key = "jose"
-#app.config['JWT_SECRET_KEY'] = 'super-secret'
-app.config['JWT_SECRET_KEY'] = 'boo'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///data.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['PROPAGATE_EXCEPTIONS'] = True
+app.config['JWT_BLACKLIST_ENABLED'] = True
+# Enabling blacklist for both access and refresh tokens
+app.config['JWT_BLACKLIST_TOKEN_CHECKS'] = ['access', 'refresh']
+app.secret_key = 'jose'  # can also use: app.config['JWT_SECRET_KEY']
 api = Api(app)
 
 
-# JWT creates a new endpoint -> /auth
-# When /auth is called we send it a username and password
-# JWT entention sends these to authenticate function and get the corrent object
-# Then the password associate with that object is compared to the one recieved from the endpoint 
-# If they match the user is returned and becomes the identity
-# jwt = JWT(app, authenticate, identity)  # /auth
+@app.before_first_request
+def create_tables():
+    db.create_all()
 
-# Changing the endpoint from /auth to /login, 
-# we would:
-app.config['JWT_AUTH_URL_RULE'] = '/login'
-jwt = JWT(app, authenticate, identity)
+# Unlike JWT, JWTManager does not creating
+# the /auth enpoint, we will create this oursleves
+jwt = JWTManager(app)
 
-# config JWT to expire within half an hour
-app.config['JWT_EXPIRATION_DELTA'] = timedelta(seconds=1800)
 
-"""
-# config JWT auth key name to be 'email' instead of default 'username'
-app.config['JWT_AUTH_USERNAME_KEY'] = 'email'
-"""
+@jwt.user_claims_loader
+def add_claims_to_jwt(identity):
+    """
+    This function will check if any extra data should
+    be added to the JWT token
+    """
+    # 1 here is the first user to be created in the db
+    # In a live system this should not be hard coded but, 
+    # read from a config file or database
+    if identity == 1:
+        return {'is_admin': True}
+    return {'is_admin': False}
 
-api.add_resource(UserRegister, '/register')
-api.add_resource(Item, '/item/<string:name>')
-api.add_resource(ItemsList, '/items')
+@jwt.token_in_blacklist_loader
+def check_if_token_in_blacklist(decrypted_token):
+    """
+    Retuns true if the token being sent is blacklisted
+    """
+    # Below 'jti' field is in the JWT and comes from
+    # the flask_jwt_extended internals
+    return decrypted_token['jti'] in BLACKLIST
+
+@jwt.expired_token_loader
+def expired_token_callback():
+    """
+    When flask_jwt_extended notes that a token sent has already 
+    expired, this function will be called to find out what 
+    message should be sent back to the user saying expired token
+    """
+    return jsonify({
+        'description': 'The token has expired.',
+        'error': 'token_expired'
+    }), 401
+
+
+@jwt.invalid_token_loader
+def invalid_token_callback(error):
+    return jsonify({
+        'description': 'Signature varification failed.',
+        'error': 'invalid_token'
+    }), 401
+
+# No JWT token sent
+@jwt.unauthorized_loader
+def missing_token_callback():
+    return jsonify({
+        'description': 'Request does not contain an access token.',
+        'error': 'authorization_required'
+    }), 401
+
+@jwt.needs_fresh_token_loader
+def token_not_fresh_callback():
+    return jsonify({
+        'description': 'The token is not fresh',
+        'error': 'fresh_token_required'
+    }), 401
+
+
+# Token no longer valid
+@jwt.revoked_token_loader
+def revoked_token_callback():
+    return jsonify({
+        'description': 'The token used has been revoked',
+        'error': 'token_revoked'
+    }), 401
+
 api.add_resource(Store, '/store/<string:name>')
-api.add_resource(StoresList, '/stores')
+api.add_resource(StoreList, '/stores')
+api.add_resource(Item, '/item/<string:name>')
+api.add_resource(ItemList, '/items')
+api.add_resource(UserRegister, '/register')
+api.add_resource(User, '/user/<int:user_id>')
+api.add_resource(UserLogout, '/logout')
+api.add_resource(UserLogin, '/login')
+api.add_resource(TokenRefresh, '/refresh')
 
-# Making sure the flask app doesn't run just by
-# app.py being imported
-# Python assigns __main__ as the name of the file that
-# has been run via 'python xxxx.py' command 
-if __name__=='__main__':
-    # Importing here due to circlar imports
+
+if __name__ == '__main__':
     from db import db
-    db.init_app(app)  # the app being pasted in is our flask app
+    db.init_app(app)
     app.run(port=5000, debug=True)

@@ -1,98 +1,92 @@
 from flask_restful import Resource, reqparse
-from flask_jwt import jwt_required
-
+from flask_jwt_extended import (jwt_required, get_jwt_claims,
+    jwt_optional, get_jwt_identity, fresh_jwt_required) 
 from models.item import ItemModel
 
-class Item(Resource):
-    # Below makes parser belong to the Item class 
-    # not an individual method
-        
-    # making sure that only some elements can be passed in
-    # through the json payload
-    # e.g. we should not be able to change the item name
-    # setting up parser
-    parser = reqparse.RequestParser()
-    # parsing will look in json payload, but also form payloads
-    # defining arguements
-    parser.add_argument(
-        'price',
-        type=float,
-        required=True, #no request can come through without price
-        help="This field cannot be blank"
-    )
-    # Store id must be passed in whenever an ItemModel is created
-    parser.add_argument(
-        'store_id',
-        type=int,
-        required=True, #no request can come through without price
-        help="Every item requires a store id"
-    )
 
-    @jwt_required()  # So we have to authenticate before calling GET method
+class Item(Resource):
+    parser = reqparse.RequestParser()
+    parser.add_argument('price',
+                        type=float,
+                        required=True,
+                        help="This field cannot be left blank!"
+                        )
+    parser.add_argument('store_id',
+                        type=int,
+                        required=True,
+                        help="Every item needs a store_id."
+                        )
+
+    # If using flask_jwt instead of flask_jwt_extended
+    # this decorator would be @jwt_required()
+    @jwt_required
     def get(self, name):
-        # Below will return an object, so can't just return item
         item = ItemModel.find_by_name(name)
         if item:
             return item.json()
-        return {'message': 'Item not found'}
+        return {'message': 'Item not found'}, 404
 
-    # Create
+    @fresh_jwt_required
     def post(self, name):
-        # Checking if item already exists
         if ItemModel.find_by_name(name):
-            return {
-               "message": "Item with name '{0}' already exists".format(name)
-        }, 400 
-        
+            return {'message': "An item with name '{}' already exists.".format(name)}, 400
+
         data = Item.parser.parse_args()
-        
-        # item = ItemModel(name, data['price'], data['store_id'])
-        # Simplicifying the above below
+
         item = ItemModel(name, **data)
-        
+
         try:
             item.save_to_db()
         except:
-            return {'message': "An error occured inserting the item"}, 500
+            return {"message": "An error occurred inserting the item."}, 500
 
         return item.json(), 201
- 
-    # Update
-    def put(self, name):  # idempotence action
-        # only the vaild values from the payload will be put in 'data' variable
-        data = Item.parser.parse_args()
+
+    @jwt_required
+    def delete(self, name):
+        claims = get_jwt_claims() # claims set up in app.py
+        if not claims['is_admin']:
+            return {
+                'message': 'Admin permissions required for this action'
+            }, 401
         item = ItemModel.find_by_name(name)
- 
-        if item is None:
-            # Create new item
-            item = ItemModel(name, data['price'], data['store_id'])
-        else:
-            # Update existing item
+        
+        if item:
+            item.delete_from_db()
+            return {'message': 'Item deleted.'}
+        return {'message': 'Item not found.'}, 404
+
+    def put(self, name):
+        data = Item.parser.parse_args()
+
+        item = ItemModel.find_by_name(name)
+
+        if item:
             item.price = data['price']
-            item.price = data['store_id']
+        else:
+            item = ItemModel(name, **data)
 
         item.save_to_db()
 
         return item.json()
 
-    # Delete
-    def delete(self, name):
-        # First find item by name
-        item = ItemModel.find_by_name(name)
 
-        if item:
-            Item.delete_from_db()
-        
-        return {'message': 'Item \'{0}\' deleted'.format(name)}
-
-
-class ItemsList(Resource):
-    # Read
+class ItemList(Resource):
+    @jwt_optional
     def get(self):
-        """
-        Same result achieved wiht lambda and list comprehension
+        # get_jwt_identity will give us whatever we saved 
+        # in the access token as the identity.
+        # The below will give the user ID in the user that is stored
+        # in the JWT, if there is no JWT token, None is returned (meaning
+        # the user is not logged in).
+        user_id = get_jwt_identity()
+        items = [item.json() for item in ItemModel.find_all()]
+        if user_id:
+            return {'items': items}, 200 
         return {
-            'items': list(map(lambda x: x.json(), ItemModel.query.all()))
-        } 
-        """
-        return {'items': [item.json() for item in ItemModel.query.all()]}
+            'items': [item['name'] for item in items],
+            'message': 'More data available if you log in.'
+        }, 200
+
+
+
