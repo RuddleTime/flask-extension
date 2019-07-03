@@ -1,4 +1,4 @@
-# Course: REST APIs with Flask and Python
+# Udemy Course: REST APIs with Flask and Python
 
 ## By: Jose Salvatierra
 
