@@ -1,2 +1,5 @@
-# cr-stores-rest-api
-Work for Udemy course "REST APIs with Flask and Pytho"
+### Course: REST APIs with Flask and Python
+
+## By: Jose Salvatierra
+
+# Section 11: Token refreshing and Flask-JWT-Extended 
